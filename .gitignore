@@ -12,3 +12,7 @@ project/plugins/project/
 # Vagrant
 .vagrant
 VERSION
+
+# IntelliJ IDEA
+.idea/
+.idea_modules/
