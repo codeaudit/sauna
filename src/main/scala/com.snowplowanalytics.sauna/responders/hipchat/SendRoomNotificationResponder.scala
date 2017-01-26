@@ -6,15 +6,16 @@ package hipchat
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
 
-import scala.util.{Failure, Success}
-
 // scala
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.io.Source
+import scala.util.{Failure, Success}
 
 // akka
 import akka.actor.{ActorRef, Props}
 
 // play
+import play.api.libs.functional.syntax._
 import play.api.libs.json._
 
 // iglu
@@ -36,49 +37,26 @@ class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) exte
   /**
    * Extracts a command from an observer event's stream and validates it.
    *
-   * @param observerEvent An `ObserverBatchEvent` containing the command string within
+   * @param observerEvent An [[ObserverBatchEvent]] containing the command string within
    *                      its' `streamContent`.
-   * @return A `RoomNotificationReceived` if the command is valid and needs to be
+   * @return A [[RoomNotificationReceived]] if the command is valid and needs to be
    *         processed by this responder, None if command is invalid or should be skipped.
    */
   override def extractEvent(observerEvent: ObserverBatchEvent): Option[RoomNotificationReceived] = {
-    // TODO: extract most of this elsewhere.
     observerEvent.streamContent match {
-      // Step 1. Retrieve an input stream.
       case Some(is) =>
-        // Step 2. Retrieve the input stream as a string, then attempt
-        // to deserialize (as JSON) to a Sauna command.
         val commandJson = Json.parse(Source.fromInputStream(is).mkString)
-        commandJson.validate[SaunaCommand] match {
-          case JsSuccess(command, _) =>
-            // Step 3. Retrieve the envelope.
-            command.envelope.data.validate[CommandEnvelope] match {
-              case JsSuccess(envelope, _) =>
-                // Step 4. Do envelope-related operations (validation etc.)
-                // TODO: implement AT_LEAST_ONCE after most of this has been extracted elsewhere.
-                envelope.execution.timeToLive match {
-                  case Some(ms) =>
-                    val commandLife = envelope.whenCreated.until(LocalDateTime.now(), ChronoUnit.MILLIS)
-                    if (commandLife > ms) {
-                      logger ! Notification(s"Command has expired: time to live is $ms but $commandLife has passed")
-                      None
-                    }
-                }
-                // Step 5. Retrieve the command.
-                command.command.data.validate[RoomNotification] match {
-                  case JsSuccess(notification, _) =>
-                    // Step 6. Execute the command.
-                    Some(RoomNotificationReceived(notification, observerEvent))
-                  case JsError(error) =>
-                    logger ! Notification(s"Encountered an issue while parsing Sauna command body: $error")
-                    None
-                }
-              case JsError(error) =>
-                logger ! Notification(s"Encountered an issue while parsing Sauna command envelope: $error")
+        extractCommand[RoomNotification](commandJson) match {
+          case Right((envelope, data)) =>
+            processCommand(envelope) match {
+              case None =>
+                Some(RoomNotificationReceived(data, observerEvent))
+              case Some(error) =>
+                logger ! Notification(error)
                 None
             }
-          case JsError(error) =>
-            logger ! Notification(s"Encountered an issue while parsing Sauna command: $error")
+          case Left(error) =>
+            logger ! Notification(error)
             None
         }
       case None =>
@@ -94,7 +72,7 @@ class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) exte
    */
   override def process(event: RoomNotificationReceived): Unit =
     hipchat.sendRoomNotification(event.roomNotification).onComplete {
-      case Success(message) => context.parent ! RoomNotificationSent(event, "Successfully sent HipChat notification")
+      case Success(message) => context.parent ! RoomNotificationSent(event, s"Successfully sent HipChat notification: $message")
       case Failure(error) => logger ! Notification(s"Error while sending HipChat notification: $error")
     }
 }
@@ -125,7 +103,6 @@ object SendRoomNotificationResponder {
   /**
    * A self-describing JSON structure, containing a reference to a JSON
    * schema and data that should validate against the given schema.
-   * TODO: validate SelfDescribing classes using iglu-scala-client when it's not broken.
    *
    * @param schema A self-describing schema key.
    * @param data   Data that should comply to the schema.
@@ -133,6 +110,11 @@ object SendRoomNotificationResponder {
   case class SelfDescribing(
     schema: SchemaKey,
     data: JsValue)
+
+  implicit val selfDescribingReads: Reads[SelfDescribing] = (
+    (JsPath \ "schema").read[String].map[SchemaKey](schemaKey => SchemaKey.fromUri(schemaKey).get) and
+      (JsPath \ "data").read[JsValue]
+    ) (SelfDescribing.apply _)
 
   /**
    * A Sauna command.
@@ -144,25 +126,22 @@ object SendRoomNotificationResponder {
     envelope: SelfDescribing,
     command: SelfDescribing)
 
-  /**
-   * A Sauna command envelope.
-   *
-   * @param commandId   A unique identifier (uuid4) for the command.
-   * @param whenCreated The command's creation date.
-   * @param execution   TODO: explain what this is
-   * @param tags        TODO: explain what this is
-   */
-  case class CommandEnvelope(
-    commandId: String,
-    whenCreated: LocalDateTime,
-    execution: ExecutionParams,
-    tags: Map[String, String]
-  )
+  implicit val saunaCommandReads: Reads[SaunaCommand] = Json.reads[SaunaCommand]
 
   /**
-   * TODO: explain what this is
+   * TODO: define what this is
+   */
+  object Semantics extends Enumeration {
+    type Semantics = Value
+    val AT_LEAST_ONCE = Value("AT_LEAST_ONCE")
+  }
+
+  implicit val semanticsReads: Reads[Semantics] = Reads.enumNameReads(Semantics)
+
+  /**
+   * TODO: define what this is
    *
-   * @param semantics  TODO: explain what this is
+   * @param semantics  TODO: define what this is
    * @param timeToLive The command's lifetime (in ms): if a command is
    *                   received after `timeToLive` ms from its' creation have
    *                   passed, it will be discarded. (If None, a command won't be
@@ -170,24 +149,82 @@ object SendRoomNotificationResponder {
    */
   case class ExecutionParams(
     semantics: Semantics,
-    timeToLive: Option[Integer]
+    timeToLive: Option[Int]
   )
 
-  /**
-   * TODO: explain what this is
-   */
-  object Semantics extends Enumeration {
-    type Semantics = Value
-    val AT_LEAST_ONCE = Value
-  }
+  implicit val timeToLiveReads: Reads[Option[Int]] = JsPath.readNullable[Int]
+  implicit val executionParamsReads: Reads[ExecutionParams] = Json.reads[ExecutionParams]
 
   /**
-   * Constructs a `Props` for a `SendRoomNotificationResponder` actor.
+   * A Sauna command envelope.
+   *
+   * @param commandId   A unique identifier (uuid4) for the command.
+   * @param whenCreated The command's creation date.
+   * @param execution   TODO: define what this is
+   * @param tags        TODO: define what this is
+   */
+  case class CommandEnvelope(
+    commandId: String,
+    whenCreated: LocalDateTime,
+    execution: ExecutionParams,
+    tags: Map[String, String]
+  )
+  implicit val commandEnvelopeReads: Reads[CommandEnvelope] = Json.reads[CommandEnvelope]
+
+  /**
+   * Constructs a [[Props]] for a [[SendRoomNotificationResponder]] actor.
    *
    * @param hipchat The HipChat API wrapper.
    * @param logger  A logger actor.
-   * @return `Props` for the new actor.
+   * @return [[Props]] for the new actor.
    */
   def props(hipchat: Hipchat, logger: ActorRef): Props =
     Props(new SendRoomNotificationResponder(hipchat, logger))
+
+  /**
+   * Attempts to extract a Sauna command from a [[JsValue]].
+   *
+   * @param json The [[JsValue]] to extract a command from.
+   * @tparam T The type of the command's data.
+   * @return Right containing a tuple of the command's envelope and data
+   *         if the extraction was successful, Left containing an error message
+   *         otherwise.
+   */
+  def extractCommand[T](json: JsValue)(implicit tReads: Reads[T]): Either[String, (CommandEnvelope, T)] = {
+    json.validate[SaunaCommand] match {
+      case JsSuccess(command, _) =>
+        command.envelope.data.validate[CommandEnvelope] match {
+          case JsSuccess(envelope, _) =>
+            command.command.data.validate[T] match {
+              case JsSuccess(data, _) =>
+                Right((envelope, data))
+              case JsError(error) =>
+                Left(s"Encountered an issue while parsing Sauna command data: $error")
+            }
+          case JsError(error) =>
+            Left(s"Encountered an issue while parsing Sauna command envelope: $error")
+        }
+      case JsError(error) =>
+        Left(s"Encountered an issue while parsing Sauna command: $error")
+    }
+  }
+
+  /**
+   * Processes a Sauna command envelope.
+   *
+   * @param envelope A Sauna command envelope.
+   * @return None if the envelope was successfully processed
+   *         and the command's data can be executed,
+   *         Some containing an error message otherwise.
+   */
+  def processCommand(envelope: CommandEnvelope): Option[String] = {
+    envelope.execution.timeToLive match {
+      case Some(ms) =>
+        val commandLife = envelope.whenCreated.until(LocalDateTime.now(), ChronoUnit.MILLIS)
+        if (commandLife > ms)
+          return Some(s"Command has expired: time to live is $ms but $commandLife has passed")
+      case None =>
+    }
+    None
+  }
 }
