@@ -48,7 +48,7 @@ class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) exte
         val commandJson = Json.parse(Source.fromInputStream(is).mkString)
         extractCommand[RoomNotification](commandJson) match {
           case Right((envelope, data)) =>
-            processCommand(envelope) match {
+            processEnvelope(envelope) match {
               case None =>
                 Some(RoomNotificationReceived(data, observerEvent))
               case Some(error) =>
@@ -126,7 +126,10 @@ object SendRoomNotificationResponder {
     envelope: SelfDescribing,
     command: SelfDescribing)
 
-  implicit val saunaCommandReads: Reads[SaunaCommand] = Json.reads[SaunaCommand]
+  implicit val saunaCommandReads: Reads[SaunaCommand] = (
+    (JsPath \ "envelope").read[SelfDescribing] and
+      (JsPath \ "command").read[SelfDescribing]
+    ) (SaunaCommand.apply _)
 
   /**
    * TODO: define what this is
@@ -191,21 +194,26 @@ object SendRoomNotificationResponder {
    *         otherwise.
    */
   def extractCommand[T](json: JsValue)(implicit tReads: Reads[T]): Either[String, (CommandEnvelope, T)] = {
-    json.validate[SaunaCommand] match {
-      case JsSuccess(command, _) =>
-        command.envelope.data.validate[CommandEnvelope] match {
-          case JsSuccess(envelope, _) =>
-            command.command.data.validate[T] match {
-              case JsSuccess(data, _) =>
-                Right((envelope, data))
+    json.validate[SelfDescribing] match {
+      case JsSuccess(selfDescribing, _) =>
+        selfDescribing.data.validate[SaunaCommand] match {
+          case JsSuccess(command, _) =>
+            command.envelope.data.validate[CommandEnvelope] match {
+              case JsSuccess(envelope, _) =>
+                command.command.data.validate[T] match {
+                  case JsSuccess(data, _) =>
+                    Right((envelope, data))
+                  case JsError(error) =>
+                    Left(s"Encountered an issue while parsing Sauna command data: $error")
+                }
               case JsError(error) =>
-                Left(s"Encountered an issue while parsing Sauna command data: $error")
+                Left(s"Encountered an issue while parsing Sauna command envelope: $error")
             }
           case JsError(error) =>
-            Left(s"Encountered an issue while parsing Sauna command envelope: $error")
+            Left(s"Encountered an issue while parsing Sauna command: $error")
         }
       case JsError(error) =>
-        Left(s"Encountered an issue while parsing Sauna command: $error")
+        Left(s"Encountered an issue while parsing self-describing JSON: $error")
     }
   }
 
@@ -217,7 +225,7 @@ object SendRoomNotificationResponder {
    *         and the command's data can be executed,
    *         Some containing an error message otherwise.
    */
-  def processCommand(envelope: CommandEnvelope): Option[String] = {
+  def processEnvelope(envelope: CommandEnvelope): Option[String] = {
     envelope.execution.timeToLive match {
       case Some(ms) =>
         val commandLife = envelope.whenCreated.until(LocalDateTime.now(), ChronoUnit.MILLIS)
