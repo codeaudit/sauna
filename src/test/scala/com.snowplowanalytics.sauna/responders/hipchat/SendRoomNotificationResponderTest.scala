@@ -1,3 +1,15 @@
+/*
+ * Copyright (c) 2017 Snowplow Analytics Ltd. All rights reserved.
+ *
+ * This program is licensed to you under the Apache License Version 2.0,
+ * and you may not use this file except in compliance with the Apache License Version 2.0.
+ * You may obtain a copy of the Apache License Version 2.0 at http://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the Apache License Version 2.0 is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the Apache License Version 2.0 for the specific language governing permissions and limitations there under.
+ */
 package com.snowplowanalytics.sauna
 package responders
 package hipchat
@@ -115,7 +127,7 @@ class SendRoomNotificationResponderTest extends FunSuite with BeforeAndAfter wit
         "9dadfc92-9311-43c7-9cee-61ab590a6e81",
         LocalDateTime.parse("2017-01-02T19:14:42"),
         ExecutionParams(
-          Semantics.AT_LEAST_ONCE,
+          AT_LEAST_ONCE,
           Some(1200000)
         ),
         Map()

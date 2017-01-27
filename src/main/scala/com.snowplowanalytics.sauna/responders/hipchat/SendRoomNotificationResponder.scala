@@ -1,12 +1,29 @@
+/*
+ * Copyright (c) 2017 Snowplow Analytics Ltd. All rights reserved.
+ *
+ * This program is licensed to you under the Apache License Version 2.0,
+ * and you may not use this file except in compliance with the Apache License Version 2.0.
+ * You may obtain a copy of the Apache License Version 2.0 at http://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the Apache License Version 2.0 is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the Apache License Version 2.0 for the specific language governing permissions and limitations there under.
+ */
 package com.snowplowanalytics.sauna
 package responders
 package hipchat
 
-// java
+// scala
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
 
-// scala
+import com.snowplowanalytics.iglu.core.Containers.SelfDescribingData
+import com.snowplowanalytics.iglu.core.SchemaKey
+import com.snowplowanalytics.sauna.observers.Observer.ObserverBatchEvent
+import play.api.libs.functional.syntax._
+import play.api.libs.json._
+
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.io.Source
 import scala.util.{Failure, Success}
@@ -14,34 +31,14 @@ import scala.util.{Failure, Success}
 // akka
 import akka.actor.{ActorRef, Props}
 
-// play
-import play.api.libs.functional.syntax._
-import play.api.libs.json._
-
-// iglu
-import com.snowplowanalytics.iglu.core.SchemaKey
-
 // sauna
+import Responder._
 import SendRoomNotificationResponder._
 import apis.Hipchat
 import apis.Hipchat._
 import loggers.Logger.Notification
-import observers.Observer.ObserverBatchEvent
-import responders.Responder._
-
-// TODO: there might be a better way to import enums
-import hipchat.SendRoomNotificationResponder.Semantics.Semantics
 
 class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) extends Responder[RoomNotificationReceived] {
-
-  /**
-   * Extracts a command from an observer event's stream and validates it.
-   *
-   * @param observerEvent An [[ObserverBatchEvent]] containing the command string within
-   *                      its' `streamContent`.
-   * @return A [[RoomNotificationReceived]] if the command is valid and needs to be
-   *         processed by this responder, None if command is invalid or should be skipped.
-   */
   override def extractEvent(observerEvent: ObserverBatchEvent): Option[RoomNotificationReceived] = {
     observerEvent.streamContent match {
       case Some(is) =>
@@ -71,23 +68,17 @@ class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) exte
    * @param event The event containing a room notification.
    */
   override def process(event: RoomNotificationReceived): Unit =
-    hipchat.sendRoomNotification(event.roomNotification).onComplete {
+    hipchat.sendRoomNotification(event.data).onComplete {
       case Success(message) => context.parent ! RoomNotificationSent(event, s"Successfully sent HipChat notification: $message")
       case Failure(error) => logger ! Notification(s"Error while sending HipChat notification: $error")
     }
 }
 
 object SendRoomNotificationResponder {
-  /**
-   * A responder event denoting that a HipChat room notification was received by
-   * the responder.
-   *
-   * @param roomNotification A room notification represented as a case class.
-   * @param source           The observer event that triggered this responder event.
-   */
   case class RoomNotificationReceived(
-    roomNotification: RoomNotification,
-    source: ObserverBatchEvent) extends ResponderEvent[ObserverBatchEvent]
+    data: RoomNotification,
+    source: ObserverBatchEvent
+  ) extends ResponderEvent[ObserverBatchEvent]
 
   /**
    * A responder result denoting that a HipChat room notification was successfully sent
@@ -101,21 +92,16 @@ object SendRoomNotificationResponder {
     message: String) extends ResponderResult
 
   /**
-   * A self-describing JSON structure, containing a reference to a JSON
-   * schema and data that should validate against the given schema.
+   * Constructs a [[Props]] for a [[SendRoomNotificationResponder]] actor.
    *
-   * @param schema A self-describing schema key.
-   * @param data   Data that should comply to the schema.
+   * @param hipchat The HipChat API wrapper.
+   * @param logger  A logger actor.
+   * @return [[Props]] for the new actor.
    */
-  case class SelfDescribing(
-    schema: SchemaKey,
-    data: JsValue)
+  def props(hipchat: Hipchat, logger: ActorRef): Props =
+    Props(new SendRoomNotificationResponder(hipchat, logger))
 
-  implicit val selfDescribingReads: Reads[SelfDescribing] = (
-    (JsPath \ "schema").read[String].map[SchemaKey](schemaKey => SchemaKey.fromUri(schemaKey).get) and
-      (JsPath \ "data").read[JsValue]
-    ) (SelfDescribing.apply _)
-
+  // vvv TODO: extract into Command class vvv
   /**
    * A Sauna command.
    *
@@ -123,23 +109,40 @@ object SendRoomNotificationResponder {
    * @param command  Specifies the exact action to execute.
    */
   case class SaunaCommand(
-    envelope: SelfDescribing,
-    command: SelfDescribing)
+    envelope: SelfDescribingData[JsValue],
+    command: SelfDescribingData[JsValue])
 
-  implicit val saunaCommandReads: Reads[SaunaCommand] = (
-    (JsPath \ "envelope").read[SelfDescribing] and
-      (JsPath \ "command").read[SelfDescribing]
-    ) (SaunaCommand.apply _)
-
-  /**
-   * TODO: define what this is
-   */
-  object Semantics extends Enumeration {
-    type Semantics = Value
-    val AT_LEAST_ONCE = Value("AT_LEAST_ONCE")
+  implicit val schemaKeyReads: Reads[SchemaKey] = Reads {
+    case JsString(s) => SchemaKey.fromUri(s) match {
+      case Some(key) => JsSuccess(key)
+      case None => JsError(s"Invalid SchemaKey: $s")
+    }
+    case _ => JsError("Non-string SchemaKey")
   }
 
-  implicit val semanticsReads: Reads[Semantics] = Reads.enumNameReads(Semantics)
+  implicit val selfDescribingDataReads: Reads[SelfDescribingData[JsValue]] = (
+    (JsPath \ "schema").read[SchemaKey] and
+      (JsPath \ "data").read[JsValue]
+    ) (SelfDescribingData.apply(_, _))
+
+  implicit val saunaCommandReads: Reads[SaunaCommand] = (
+    (JsPath \ "envelope").read[SelfDescribingData[JsValue]] and
+      (JsPath \ "command").read[SelfDescribingData[JsValue]]
+    ) (SaunaCommand.apply _)
+
+  sealed trait Semantics
+  case object AT_LEAST_ONCE extends Semantics
+  object Semantics {
+    val values = List(AT_LEAST_ONCE)
+  }
+
+  implicit val semanticsReads: Reads[Semantics] = Reads {
+    case JsString(s) => Semantics.values.find(value => value.toString == s) match {
+      case Some(value) => JsSuccess(value)
+      case None => JsError(s"Invalid Semantics: $s")
+    }
+    case _ => JsError("Non-string Semantics")
+  }
 
   /**
    * TODO: define what this is
@@ -175,16 +178,6 @@ object SendRoomNotificationResponder {
   implicit val commandEnvelopeReads: Reads[CommandEnvelope] = Json.reads[CommandEnvelope]
 
   /**
-   * Constructs a [[Props]] for a [[SendRoomNotificationResponder]] actor.
-   *
-   * @param hipchat The HipChat API wrapper.
-   * @param logger  A logger actor.
-   * @return [[Props]] for the new actor.
-   */
-  def props(hipchat: Hipchat, logger: ActorRef): Props =
-    Props(new SendRoomNotificationResponder(hipchat, logger))
-
-  /**
    * Attempts to extract a Sauna command from a [[JsValue]].
    *
    * @param json The [[JsValue]] to extract a command from.
@@ -194,26 +187,16 @@ object SendRoomNotificationResponder {
    *         otherwise.
    */
   def extractCommand[T](json: JsValue)(implicit tReads: Reads[T]): Either[String, (CommandEnvelope, T)] = {
-    json.validate[SelfDescribing] match {
-      case JsSuccess(selfDescribing, _) =>
-        selfDescribing.data.validate[SaunaCommand] match {
-          case JsSuccess(command, _) =>
-            command.envelope.data.validate[CommandEnvelope] match {
-              case JsSuccess(envelope, _) =>
-                command.command.data.validate[T] match {
-                  case JsSuccess(data, _) =>
-                    Right((envelope, data))
-                  case JsError(error) =>
-                    Left(s"Encountered an issue while parsing Sauna command data: $error")
-                }
-              case JsError(error) =>
-                Left(s"Encountered an issue while parsing Sauna command envelope: $error")
-            }
-          case JsError(error) =>
-            Left(s"Encountered an issue while parsing Sauna command: $error")
-        }
-      case JsError(error) =>
-        Left(s"Encountered an issue while parsing self-describing JSON: $error")
+    val jsResult = for {
+      s <- json.validate[SelfDescribingData[JsValue]]
+      c <- s.data.validate[SaunaCommand]
+      e <- c.envelope.data.validate[CommandEnvelope]
+      d <- c.command.data.validate[T]
+    } yield (e, d)
+
+    jsResult.asEither match {
+      case Right(success) => Right(success)
+      case Left(errors) => Left(s"[Common error message]: $errors")
     }
   }
 
@@ -226,13 +209,10 @@ object SendRoomNotificationResponder {
    *         Some containing an error message otherwise.
    */
   def processEnvelope(envelope: CommandEnvelope): Option[String] = {
-    envelope.execution.timeToLive match {
-      case Some(ms) =>
-        val commandLife = envelope.whenCreated.until(LocalDateTime.now(), ChronoUnit.MILLIS)
-        if (commandLife > ms)
-          return Some(s"Command has expired: time to live is $ms but $commandLife has passed")
-      case None =>
-    }
-    None
+    for {
+      ms <- envelope.execution.timeToLive
+      commandLife = envelope.whenCreated.until(LocalDateTime.now(), ChronoUnit.MILLIS)
+      if commandLife > ms
+    } yield s"Command has expired: time to live is $ms but $commandLife has passed"
   }
 }
