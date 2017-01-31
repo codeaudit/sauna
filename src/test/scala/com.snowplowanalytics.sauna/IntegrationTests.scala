@@ -22,6 +22,7 @@ import java.util.UUID
 import scala.io.Source.fromInputStream
 import scala.concurrent.{ Future, Await }
 import scala.concurrent.duration._
+import scala.reflect.classTag
 
 // scalatest
 import org.scalatest._
@@ -50,7 +51,7 @@ import apis.{ Optimizely, Sendgrid }
 import loggers.Logger
 import loggers.Logger.{Manifestation, Notification}
 import observers._
-import observers.Observer.{ ObserverBatchEvent, LocalFilePublished }
+import observers.Observer.{ ObserverFileEvent, LocalFilePublished }
 import responders.Responder
 import responders.Responder.{ResponderEvent, ResponderResult}
 import responders.sendgrid._
@@ -67,7 +68,7 @@ object IntegrationTests {
     override val responderActors = respondersProps.map(p => context.actorOf(p))
   }
 
-  case class AnyEvent(source: ObserverBatchEvent) extends Responder.ResponderEvent[ObserverBatchEvent]
+  case class AnyEvent(source: ObserverFileEvent) extends Responder.ResponderEvent[ObserverFileEvent]
 
   val filePath = "some-non-existing-file-123/opt/sauna/com.sendgrid.contactdb/recipients/v1/tsv:email,birthday,middle_name,favorite_number,when_promoted/ua-team/joe/warehouse.tsv"
   class MockLocalFilePublished(data: String, observer: ActorRef) extends LocalFilePublished(java.nio.file.Paths.get(filePath), observer) {
@@ -77,8 +78,9 @@ object IntegrationTests {
   /**
    * Dummy responder ignoring all observer event
    */
-  class DummyResponder(val logger: ActorRef) extends Responder[AnyEvent] {
-    def extractEvent(observerEvent: ObserverBatchEvent): Option[AnyEvent] = None
+  class DummyResponder(val logger: ActorRef) extends Responder[ObserverFileEvent, AnyEvent] {
+    def tag = classTag[ObserverFileEvent]
+    def extractEvent(observerEvent: ObserverFileEvent): Option[AnyEvent] = None
     def process(observerEvent: AnyEvent) = ???
   }
 
@@ -102,7 +104,7 @@ object IntegrationTests {
     def readyToAnswer: Receive = { case WhenFinished => sender() ! finished }
 
     def receiveResults: Receive = {
-      case result: ResponderResult =>
+      case result: ResponderResult[_] =>
         results = results + 1
         if (results == 2) {
           finished = System.currentTimeMillis()
@@ -168,10 +170,12 @@ class IntegrationTests extends FunSuite with BeforeAndAfter {
     var expectedLines: Seq[String] = Seq()
 
     val responders =
-      Props(new Responder[AnyEvent] {
+      Props(new Responder[ObserverFileEvent, AnyEvent] {
         val logger: ActorRef = null
 
-        def extractEvent(event: ObserverBatchEvent): Option[AnyEvent] = {
+        def tag = classTag[ObserverFileEvent]
+
+        def extractEvent(event: ObserverFileEvent): Option[AnyEvent] = {
           Some(AnyEvent(event))
         }
 
@@ -179,8 +183,8 @@ class IntegrationTests extends FunSuite with BeforeAndAfter {
 
         def process(event: AnyEvent): Unit = {
           expectedLines = fromInputStream(event.source.streamContent.get).getLines().toSeq
-          self ! new ResponderResult {
-            override def source: ResponderEvent[ObserverBatchEvent] = event
+          self ! new ResponderResult[ObserverFileEvent] {
+            override def source: ResponderEvent[ObserverFileEvent] = event
             override def message: String = "OK!"
           }
         }

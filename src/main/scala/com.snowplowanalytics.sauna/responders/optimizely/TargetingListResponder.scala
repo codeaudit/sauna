@@ -22,6 +22,7 @@ import java.util.UUID
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.io.Source.fromInputStream
+import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
 import scala.util.{ Success, Failure }
 
@@ -41,7 +42,7 @@ import com.github.tototoshi.csv._
 // sauna
 import apis.Optimizely
 import loggers.Logger.Manifestation
-import observers.Observer.ObserverBatchEvent
+import observers.Observer.ObserverFileEvent
 import responders.Responder._
 import utils._
 import TargetingListResponder._
@@ -53,10 +54,11 @@ import TargetingListResponder._
  * @param optimizely Instance of Optimizely.
  * @param logger A logger actor.
  */
-class TargetingListResponder(optimizely: Optimizely, val logger: ActorRef) extends Responder[TargetingListPublished] {
+class TargetingListResponder(optimizely: Optimizely, val logger: ActorRef) extends Responder[ObserverFileEvent, TargetingListPublished] {
+  override def tag: ClassTag[ObserverFileEvent] = classTag[ObserverFileEvent]
 
-  def extractEvent(observerEvent: ObserverBatchEvent): Option[TargetingListPublished] = {
-    if (observerEvent.path.matches(pathPattern)) Some(TargetingListPublished(observerEvent))
+  def extractEvent(observerEvent: ObserverFileEvent): Option[TargetingListPublished] = {
+    if (observerEvent.id.matches(pathPattern)) Some(TargetingListPublished(observerEvent))
     else None
   }
 
@@ -73,10 +75,10 @@ class TargetingListResponder(optimizely: Optimizely, val logger: ActorRef) exten
 
         Future.sequence(iterables).map(_.foreach(logResponse)).onComplete {
           case Success(_) =>
-            context.parent ! TargetingListUploaded(event, s"Targeting list from ${event.source.path} has been successfully published")
+            context.parent ! TargetingListUploaded(event, s"Targeting list from ${event.source.id} has been successfully published")
           case Failure(error) => notify(error.toString)
         }
-      case None => notify(s"Cannot read file [${event.source.path}]")
+      case None => notify(s"Cannot read file [${event.source.id}]")
     }
   }
 
@@ -125,7 +127,7 @@ object TargetingListResponder {
    *
    * @param source original observer event
    */
-  case class TargetingListPublished(source: ObserverBatchEvent) extends ResponderEvent[ObserverBatchEvent]
+  case class TargetingListPublished(source: ObserverFileEvent) extends ResponderEvent[ObserverFileEvent]
 
   /**
    * Event denoting that targeting list has been successfully processed and uploaded
@@ -133,7 +135,7 @@ object TargetingListResponder {
    * @param source original responder event
    * @param message success message
    */
-  case class TargetingListUploaded(source: TargetingListPublished, message: String) extends ResponderResult
+  case class TargetingListUploaded(source: TargetingListPublished, message: String) extends ResponderResult[ObserverFileEvent]
 
   val pathPattern =
     """.*com\.optimizely/

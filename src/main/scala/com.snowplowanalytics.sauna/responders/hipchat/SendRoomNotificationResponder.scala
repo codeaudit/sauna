@@ -14,19 +14,23 @@ package com.snowplowanalytics.sauna
 package responders
 package hipchat
 
-// scala
+// java
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
 
-import com.snowplowanalytics.iglu.core.Containers.SelfDescribingData
-import com.snowplowanalytics.iglu.core.SchemaKey
-import com.snowplowanalytics.sauna.observers.Observer.ObserverBatchEvent
-import play.api.libs.functional.syntax._
-import play.api.libs.json._
-
+// scala
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.io.Source
+import scala.reflect.{ClassTag, classTag}
 import scala.util.{Failure, Success}
+
+// iglu
+import com.snowplowanalytics.iglu.core.Containers.SelfDescribingData
+import com.snowplowanalytics.iglu.core.SchemaKey
+
+// play
+import play.api.libs.functional.syntax._
+import play.api.libs.json._
 
 // akka
 import akka.actor.{ActorRef, Props}
@@ -37,27 +41,25 @@ import SendRoomNotificationResponder._
 import apis.Hipchat
 import apis.Hipchat._
 import loggers.Logger.Notification
+import observers.Observer.ObserverCommandEvent
 
-class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) extends Responder[RoomNotificationReceived] {
-  override def extractEvent(observerEvent: ObserverBatchEvent): Option[RoomNotificationReceived] = {
-    observerEvent.streamContent match {
-      case Some(is) =>
-        val commandJson = Json.parse(Source.fromInputStream(is).mkString)
-        extractCommand[RoomNotification](commandJson) match {
-          case Right((envelope, data)) =>
-            processEnvelope(envelope) match {
-              case None =>
-                Some(RoomNotificationReceived(data, observerEvent))
-              case Some(error) =>
-                logger ! Notification(error)
-                None
-            }
-          case Left(error) =>
+class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) extends Responder[ObserverCommandEvent, RoomNotificationReceived] {
+  override def tag: ClassTag[ObserverCommandEvent] = classTag[ObserverCommandEvent]
+
+  override def extractEvent(observerEvent: ObserverCommandEvent): Option[RoomNotificationReceived] = {
+
+    val commandJson = Json.parse(Source.fromInputStream(observerEvent.streamContent).mkString)
+    extractCommand[RoomNotification](commandJson) match {
+      case Right((envelope, data)) =>
+        processEnvelope(envelope) match {
+          case None =>
+            Some(RoomNotificationReceived(data, observerEvent))
+          case Some(error) =>
             logger ! Notification(error)
             None
         }
-      case None =>
-        logger ! Notification("No stream present, cannot parse command")
+      case Left(error) =>
+        logger ! Notification(error)
         None
     }
   }
@@ -77,8 +79,8 @@ class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) exte
 object SendRoomNotificationResponder {
   case class RoomNotificationReceived(
     data: RoomNotification,
-    source: ObserverBatchEvent
-  ) extends ResponderEvent[ObserverBatchEvent]
+    source: ObserverCommandEvent
+  ) extends ResponderEvent[ObserverCommandEvent]
 
   /**
    * A responder result denoting that a HipChat room notification was successfully sent
@@ -89,7 +91,7 @@ object SendRoomNotificationResponder {
    */
   case class RoomNotificationSent(
     source: RoomNotificationReceived,
-    message: String) extends ResponderResult
+    message: String) extends ResponderResult[ObserverCommandEvent]
 
   /**
    * Constructs a [[Props]] for a [[SendRoomNotificationResponder]] actor.

@@ -18,14 +18,16 @@ package optimizely
 import java.io.{File, InputStream, PrintWriter, StringReader}
 import java.util.UUID
 
+
 // nscala-time
 import com.github.nscala_time.time.StaticDateTimeFormat
 
 // scala
 import scala.concurrent.Future
 import scala.io.Source.fromInputStream
+import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
-import scala.util.{Success, Failure}
+import scala.util.{Failure, Success}
 
 // akka
 import akka.actor.{ActorRef, Props}
@@ -38,11 +40,11 @@ import awscala.s3.{Bucket, S3}
 import com.github.tototoshi.csv._
 
 // sauna
-import apis.Optimizely
-import responders.Responder._
-import observers.Observer.ObserverBatchEvent
-import utils._
 import DcpResponder._
+import apis.Optimizely
+import observers.Observer.ObserverFileEvent
+import responders.Responder._
+import utils._
 
 
 /**
@@ -53,9 +55,11 @@ import DcpResponder._
  * @param importRegion AWS region for Optimizely S3 bucket
  * @param logger A logger actor
  */
-class DcpResponder(optimizely: Optimizely, importRegion: String, val logger: ActorRef) extends Responder[CustomersProfilesPublished] {
+class DcpResponder(optimizely: Optimizely, importRegion: String, val logger: ActorRef) extends Responder[ObserverFileEvent, CustomersProfilesPublished] {
 
   import context.dispatcher
+
+  override def tag: ClassTag[ObserverFileEvent] = classTag[ObserverFileEvent]
 
   /**
    * Extract [[CustomersProfilesPublished]] from path like:
@@ -66,7 +70,7 @@ class DcpResponder(optimizely: Optimizely, importRegion: String, val logger: Act
    * @return Some [[CustomersProfilesPublished]] if this observer-event need to be
    *         processed by this responder, None if event need to be skept
    */
-  def extractEvent(observerEvent: ObserverBatchEvent): Option[CustomersProfilesPublished] = {
+  def extractEvent(observerEvent: ObserverFileEvent): Option[CustomersProfilesPublished] = {
     extractCustomerPublished(observerEvent) match {
       case Right(event) => Some(event)
       case Left(Some(error)) =>
@@ -90,7 +94,7 @@ class DcpResponder(optimizely: Optimizely, importRegion: String, val logger: Act
           val s3 = S3(accessKey, secretKey)(Region(importRegion))
           prepareFile(event) match {
             case Some(prepared) => publishFile(prepared, s3)
-            case None => Future.failed(new RuntimeException(s"Cannot read file [${event.source.path}]"))
+            case None => Future.failed(new RuntimeException(s"Cannot read file [${event.source.id}]"))
           }
         case None => Future.failed(new RuntimeException(s"Cannot get AWS credentials for datasource [${event.datasource}]"))
       }
@@ -150,10 +154,10 @@ object DcpResponder {
       service: String,
       datasource: String,
       attrs: String,
-      source: ObserverBatchEvent
-  ) extends ResponderEvent[ObserverBatchEvent]
+      source: ObserverFileEvent
+  ) extends ResponderEvent[ObserverFileEvent]
 
-  case class CustomersProfilesUploaded(source: CustomersProfilesPublished, message: String) extends ResponderResult
+  case class CustomersProfilesUploaded(source: CustomersProfilesPublished, message: String) extends ResponderResult[ObserverFileEvent]
 
   /**
    * Result file that has been corrected, transformed and reaady to be
@@ -189,7 +193,7 @@ object DcpResponder {
    * @return corrected file path
    */
   def correctName(source: CustomersProfilesPublished): String = {
-    val original = source.source.path.substring(source.source.path.indexOf(source.attrs) + source.attrs.length + 1)
+    val original = source.source.id.substring(source.source.id.indexOf(source.attrs) + source.attrs.length + 1)
     if (original.endsWith(".tsv")) {
       original.stripSuffix(".tsv") + ".csv"
     } else {
@@ -272,12 +276,12 @@ object DcpResponder {
    *         left some error if path is correct only partly
    *         left none if file shouldn't be handled by responder
    */
-  def extractCustomerPublished(observerEvent: ObserverBatchEvent): Either[Option[String], CustomersProfilesPublished] = {
-    observerEvent.path match {
+  def extractCustomerPublished(observerEvent: ObserverFileEvent): Either[Option[String], CustomersProfilesPublished] = {
+    observerEvent.id match {
       case pathRegexp(service, datasource, attrs) if attrs.contains("customerId") =>
         Right(CustomersProfilesPublished(service, datasource, attrs, observerEvent))
       case pathRegexp(_, _, _) =>
-        Left(Some(s"DcpResponder: attribute 'customerId' for [${observerEvent.path}] must be included"))
+        Left(Some(s"DcpResponder: attribute 'customerId' for [${observerEvent.id}] must be included"))
       case _ => Left(None)
     }
   }

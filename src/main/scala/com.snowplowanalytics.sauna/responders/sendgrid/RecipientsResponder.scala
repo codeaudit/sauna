@@ -19,6 +19,7 @@ import java.io.{InputStream, StringReader}
 
 // scala
 import scala.io.Source.fromInputStream
+import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
 
 // akka
@@ -31,7 +32,7 @@ import com.github.tototoshi.csv._
 import apis.Sendgrid
 import responders.Responder._
 import RecipientsResponder._
-import observers.Observer.ObserverBatchEvent
+import observers.Observer.ObserverFileEvent
 import RecipientsWorker.Delegate
 import utils._
 
@@ -45,7 +46,8 @@ import utils._
  * @param sendgrid Sendgrid API Wrapper
  * @param logger A logger actor.
  */
-class RecipientsResponder(sendgrid: Sendgrid, val logger: ActorRef) extends Responder[RecipientsPublished] {
+class RecipientsResponder(sendgrid: Sendgrid, val logger: ActorRef) extends Responder[ObserverFileEvent, RecipientsPublished] {
+  override def tag: ClassTag[ObserverFileEvent] = classTag[ObserverFileEvent]
 
   /**
    * Worker actor doing all posting
@@ -61,12 +63,12 @@ class RecipientsResponder(sendgrid: Sendgrid, val logger: ActorRef) extends Resp
    * @return Some [[RecipientsPublished]] if this observer-event need to be
    *         processed by this responder, None if event need to be skept
    */
-  def extractEvent(observerEvent: ObserverBatchEvent): Option[RecipientsPublished] = {
-    observerEvent.path match {
+  def extractEvent(observerEvent: ObserverFileEvent): Option[RecipientsPublished] = {
+    observerEvent.id match {
       case pathRegexp(attrs) if attrs.split(",").contains("email") =>
         Some(RecipientsPublished(attrs.split(",").toList, observerEvent))
       case pathRegexp(_) =>
-        notify(s"RecipientsResponder: attribute 'email' for [${observerEvent.path}] must be included")
+        notify(s"RecipientsResponder: attribute 'email' for [${observerEvent.id}] must be included")
         None
       case _ => None
     }
@@ -80,7 +82,7 @@ class RecipientsResponder(sendgrid: Sendgrid, val logger: ActorRef) extends Resp
       case Some(content) =>
         worker ! Delegate(RecipientsChunks.parse(content, event, notify _))
       case None =>
-        notify(s"FAILURE: event's [${event.source.path}] source doesn't exist")
+        notify(s"FAILURE: event's [${event.source.id}] source doesn't exist")
     }
   }
 }
@@ -122,7 +124,7 @@ object RecipientsResponder {
    * @param attrs list of attributes extracted from filepath
    * @param source underlying observer event
    */
-  case class RecipientsPublished(attrs: List[String], source: ObserverBatchEvent) extends ResponderEvent[ObserverBatchEvent]
+  case class RecipientsPublished(attrs: List[String], source: ObserverFileEvent) extends ResponderEvent[ObserverFileEvent]
 
   /**
    * Constructs a Props for RecipientsResponder actor

@@ -20,7 +20,7 @@ import scala.util.control.NonFatal
 import awscala.sqs.SQS
 
 // akka
-import akka.actor.{ Actor, ActorRef }
+import akka.actor.{Actor, ActorRef}
 
 // java
 import java.io.InputStream
@@ -36,7 +36,8 @@ import loggers.Logger.Notification
  * responsibility to manipulate and cleanup resources after event has been
  * processed.
  */
-trait Observer { self: Actor =>
+trait Observer {
+  self: Actor =>
   /**
    * Send message to supervisor trait to forward it to loggers
    * This means observer should also be a child of supvervisor
@@ -49,27 +50,43 @@ trait Observer { self: Actor =>
 object Observer {
 
   /**
-   * Common trait for file-published event, which can provide access
-   * to file path (so responders can decided whether handle it or not)
-   * and to content stream (so responders can read it)
+   * Common trait for observer events.
    */
-  sealed trait ObserverBatchEvent extends Product with Serializable {
+  trait ObserverEvent extends Product with Serializable {
     /**
-     * Full string representation of published file
+     * A full string representation of the event.
      */
-    def path: String
+    def id: String
 
+    /**
+     * The observer that emitted this event.
+     */
+    def observer: ActorRef
+  }
+
+  /**
+   * Common trait for command-based events. Does not use an identifier and
+   * always contains a content stream.
+   */
+  sealed trait ObserverCommandEvent extends ObserverEvent {
+    /**
+     * A stream containing the contents of the command.
+     */
+    def streamContent: InputStream
+  }
+
+  /**
+   * Common trait for file-published events. Its' identifier is the path
+   * to the file (so responders can decided whether handle it or not)
+   * and it contains a content stream (so responders can read it)
+   */
+  sealed trait ObserverFileEvent extends ObserverEvent {
     /**
      * File's content stream. It can be streamed from local FS or from S3
      * None if file cannot be streamed
      * This should never be a part of object and wouldn't affect equality check
      */
     def streamContent: Option[InputStream]
-
-    /**
-     * Observer emitted event
-     */
-    def observer: ActorRef
   }
 
   /**
@@ -77,8 +94,9 @@ object Observer {
    *
    * @param file full root of file
    */
-  case class LocalFilePublished(file: Path, observer: ActorRef) extends ObserverBatchEvent {
-    def path = file.toAbsolutePath.toString
+  case class LocalFilePublished(file: Path, observer: ActorRef) extends ObserverFileEvent {
+    def id = file.toAbsolutePath.toString
+
     def streamContent = try {
       Some(Files.newInputStream(file))
     } catch {
@@ -89,11 +107,11 @@ object Observer {
   /**
    * File has been published on AWS S3
    *
-   * @param path full path on S3 bucket
+   * @param id     full path on S3 bucket
    * @param s3Source AWS S3 credentials to access bucket and object
    */
-  case class S3FilePublished(path: String, s3Source: S3Source, observer: ActorRef) extends ObserverBatchEvent {
-    def streamContent = s3Source.s3.get(s3Source.bucket, path).map(_.content)
+  case class S3FilePublished(id: String, s3Source: S3Source, observer: ActorRef) extends ObserverFileEvent {
+    def streamContent = s3Source.s3.get(s3Source.bucket, id).map(_.content)
   }
 
   /**

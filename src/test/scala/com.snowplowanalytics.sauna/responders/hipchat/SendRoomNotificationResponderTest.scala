@@ -31,7 +31,7 @@ class SendRoomNotificationResponderTest extends FunSuite with BeforeAndAfter wit
   test("extractCommand invalid JSON") {
     val command = Json.parse(""""{}""""")
     val result = SendRoomNotificationResponder.extractCommand[RoomNotification](command)
-    assert(result.left.value.contains("Encountered an issue while parsing self-describing JSON"))
+    assert(result.isLeft)
   }
 
   test("extractCommand invalid envelope") {
@@ -58,7 +58,7 @@ class SendRoomNotificationResponderTest extends FunSuite with BeforeAndAfter wit
         |}
       """.stripMargin)
     val result = SendRoomNotificationResponder.extractCommand[RoomNotification](command)
-    assert(result.left.value.contains("Encountered an issue while parsing Sauna command envelope"))
+    assert(result.isLeft)
   }
 
   test("extractCommand invalid data") {
@@ -87,7 +87,7 @@ class SendRoomNotificationResponderTest extends FunSuite with BeforeAndAfter wit
         |}
       """.stripMargin)
     val result = SendRoomNotificationResponder.extractCommand[RoomNotification](command)
-    assert(result.left.value.contains("Encountered an issue while parsing Sauna command data"))
+    assert(result.isLeft)
   }
 
   test("extractCommand valid JSON") {
