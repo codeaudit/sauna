@@ -21,7 +21,6 @@ import java.time.temporal.ChronoUnit
 // scala
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.io.Source
-import scala.reflect.{ClassTag, classTag}
 import scala.util.{Failure, Success}
 
 // iglu
@@ -41,26 +40,28 @@ import SendRoomNotificationResponder._
 import apis.Hipchat
 import apis.Hipchat._
 import loggers.Logger.Notification
-import observers.Observer.ObserverCommandEvent
+import observers.Observer.{ ObserverEvent, ObserverCommandEvent }
 
 class SendRoomNotificationResponder(hipchat: Hipchat, val logger: ActorRef) extends Responder[ObserverCommandEvent, RoomNotificationReceived] {
-  override def tag: ClassTag[ObserverCommandEvent] = classTag[ObserverCommandEvent]
 
-  override def extractEvent(observerEvent: ObserverCommandEvent): Option[RoomNotificationReceived] = {
-
-    val commandJson = Json.parse(Source.fromInputStream(observerEvent.streamContent).mkString)
-    extractCommand[RoomNotification](commandJson) match {
-      case Right((envelope, data)) =>
-        processEnvelope(envelope) match {
-          case None =>
-            Some(RoomNotificationReceived(data, observerEvent))
-          case Some(error) =>
+  override def extractEvent(observerEvent: ObserverEvent): Option[RoomNotificationReceived] = {
+    observerEvent match {
+      case e: ObserverCommandEvent =>
+        val commandJson = Json.parse(Source.fromInputStream(e.streamContent).mkString)
+        extractCommand[RoomNotification](commandJson) match {
+          case Right((envelope, data)) =>
+            processEnvelope(envelope) match {
+              case None =>
+                Some(RoomNotificationReceived(data, e))
+              case Some(error) =>
+                logger ! Notification(error)
+                None
+            }
+          case Left(error) =>
             logger ! Notification(error)
             None
         }
-      case Left(error) =>
-        logger ! Notification(error)
-        None
+      case _ => None
     }
   }
 
@@ -80,7 +81,7 @@ object SendRoomNotificationResponder {
   case class RoomNotificationReceived(
     data: RoomNotification,
     source: ObserverCommandEvent
-  ) extends ResponderEvent[ObserverCommandEvent]
+  ) extends ResponderEvent
 
   /**
    * A responder result denoting that a HipChat room notification was successfully sent

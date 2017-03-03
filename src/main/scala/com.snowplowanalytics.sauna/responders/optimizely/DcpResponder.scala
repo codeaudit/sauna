@@ -25,7 +25,6 @@ import com.github.nscala_time.time.StaticDateTimeFormat
 // scala
 import scala.concurrent.Future
 import scala.io.Source.fromInputStream
-import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success}
 
@@ -42,7 +41,7 @@ import com.github.tototoshi.csv._
 // sauna
 import DcpResponder._
 import apis.Optimizely
-import observers.Observer.ObserverFileEvent
+import observers.Observer.{ ObserverEvent, ObserverFileEvent }
 import responders.Responder._
 import utils._
 
@@ -59,8 +58,6 @@ class DcpResponder(optimizely: Optimizely, importRegion: String, val logger: Act
 
   import context.dispatcher
 
-  override def tag: ClassTag[ObserverFileEvent] = classTag[ObserverFileEvent]
-
   /**
    * Extract [[CustomersProfilesPublished]] from path like:
    * `com.optimizely.dcp/datasource/v1/4034482827/5080511852/tsv:isVip,customerId,spendSegment,whenCreated/ua-team/joe/warehouse.tsv`
@@ -70,15 +67,19 @@ class DcpResponder(optimizely: Optimizely, importRegion: String, val logger: Act
    * @return Some [[CustomersProfilesPublished]] if this observer-event need to be
    *         processed by this responder, None if event need to be skept
    */
-  def extractEvent(observerEvent: ObserverFileEvent): Option[CustomersProfilesPublished] = {
-    extractCustomerPublished(observerEvent) match {
-      case Right(event) => Some(event)
-      case Left(Some(error)) =>
-        // TODO: cases where path is only partly correct should be handled differently, without deleting source file
-        notify(error)
-        None
-      case Left(None) =>
-        None
+  def extractEvent(observerEvent: ObserverEvent): Option[CustomersProfilesPublished] = {
+    observerEvent match {
+      case fileEvent: ObserverFileEvent =>
+        extractCustomerPublished(fileEvent) match {
+          case Right(event) => Some(event)
+          case Left(Some(error)) =>
+            // TODO: cases where path is only partly correct should be handled differently, without deleting source file
+            notify(error)
+            None
+          case Left(None) =>
+            None
+        }
+      case _ => None
     }
   }
 
@@ -155,7 +156,7 @@ object DcpResponder {
       datasource: String,
       attrs: String,
       source: ObserverFileEvent
-  ) extends ResponderEvent[ObserverFileEvent]
+  ) extends ResponderEvent
 
   case class CustomersProfilesUploaded(source: CustomersProfilesPublished, message: String) extends ResponderResult[ObserverFileEvent]
 

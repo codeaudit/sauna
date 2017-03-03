@@ -95,6 +95,7 @@ object Observer {
    * @param file full root of file
    */
   case class LocalFilePublished(file: Path, observer: ActorRef) extends ObserverFileEvent {
+
     def id = file.toAbsolutePath.toString
 
     def streamContent = try {

@@ -22,7 +22,6 @@ import java.util.UUID
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.io.Source.fromInputStream
-import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
 import scala.util.{ Success, Failure }
 
@@ -42,7 +41,7 @@ import com.github.tototoshi.csv._
 // sauna
 import apis.Optimizely
 import loggers.Logger.Manifestation
-import observers.Observer.ObserverFileEvent
+import observers.Observer.{ ObserverFileEvent, ObserverEvent }
 import responders.Responder._
 import utils._
 import TargetingListResponder._
@@ -55,12 +54,14 @@ import TargetingListResponder._
  * @param logger A logger actor.
  */
 class TargetingListResponder(optimizely: Optimizely, val logger: ActorRef) extends Responder[ObserverFileEvent, TargetingListPublished] {
-  override def tag: ClassTag[ObserverFileEvent] = classTag[ObserverFileEvent]
 
-  def extractEvent(observerEvent: ObserverFileEvent): Option[TargetingListPublished] = {
-    if (observerEvent.id.matches(pathPattern)) Some(TargetingListPublished(observerEvent))
-    else None
-  }
+  def extractEvent(observerEvent: ObserverEvent): Option[TargetingListPublished] =
+    observerEvent match {
+      case fileEvent: ObserverFileEvent if fileEvent.id.matches(pathPattern) =>
+        Some(TargetingListPublished(fileEvent))
+      case _ => None
+    }
+
 
   /**
    * Extract data from tsv, group by project id and post to endpoint
@@ -127,7 +128,7 @@ object TargetingListResponder {
    *
    * @param source original observer event
    */
-  case class TargetingListPublished(source: ObserverFileEvent) extends ResponderEvent[ObserverFileEvent]
+  case class TargetingListPublished(source: ObserverFileEvent) extends ResponderEvent
 
   /**
    * Event denoting that targeting list has been successfully processed and uploaded

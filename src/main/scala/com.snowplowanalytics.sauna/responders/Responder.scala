@@ -13,9 +13,6 @@
 package com.snowplowanalytics.sauna
 package responders
 
-// scala
-import scala.reflect.ClassTag
-
 // akka
 import akka.actor.{Actor, ActorRef}
 
@@ -26,7 +23,7 @@ import awscala.sqs.Message
 // sauna
 import Responder._
 import loggers.Logger.Notification
-import observers.Observer.{ObserverEvent, ObserverFileEvent}
+import observers.Observer.ObserverEvent
 
 
 /**
@@ -34,9 +31,12 @@ import observers.Observer.{ObserverEvent, ObserverFileEvent}
  * from observer-events. After event extracted, responder can delegate it
  * to dedicated worker
  *
- * @tparam RE responder event, which responder supposed to process
+ * @tparam OE observer event (input),
+ *            this is aux type to mark what events could be accepted
+ * @tparam RE responder event (output),
+ *            which responder supposed to process
  */
-trait Responder[OE <: ObserverEvent, RE <: ResponderEvent[OE]] extends Actor {
+trait Responder[OE <: ObserverEvent, RE <: ResponderEvent] extends Actor {
 
   /**
    * Common for all responders actor logger to dump errors and warnings
@@ -44,12 +44,10 @@ trait Responder[OE <: ObserverEvent, RE <: ResponderEvent[OE]] extends Actor {
    */
   def logger: ActorRef
 
-  implicit def tag: ClassTag[OE]
-
   def receive = {
     // Check if message should be handled by responder and actually process it
     // Mediator awaits for `ResponderAck`
-    case message: OE =>
+    case message: ObserverEvent =>
       extractEvent(message) match {
         case Some(event) =>
           sender() ! Accepted(message, self)
@@ -76,7 +74,7 @@ trait Responder[OE <: ObserverEvent, RE <: ResponderEvent[OE]] extends Actor {
    * @return Some responder-specific event if this observer-event need to be
    *         processed by this responder, None if event need to be skept
    */
-  def extractEvent(observerEvent: OE): Option[RE]
+  def extractEvent(observerEvent: ObserverEvent): Option[RE]
 
   /**
    * Primary responder's method. Process file or delegate job to worker actor.
@@ -118,13 +116,13 @@ object Responder {
    * `ObserverBatchEvent` event, but in future it can be anything that can
    * provide full event's data
    */
-  trait ResponderEvent[OE <: ObserverEvent] {
+  trait ResponderEvent {
     /**
      * Each responder event need to include reference to some source from
      * which whole event data can be extracted, usually this is `ObserverBatchEvent`
      * Responder can extract `ResponderEvent` from `OE`
      */
-    def source: OE
+    def source: ObserverEvent
   }
 
   /**
@@ -134,7 +132,7 @@ object Responder {
   trait ResponderResult[OE <: ObserverEvent] {
     def message: String
 
-    def source: ResponderEvent[OE]
+    def source: ResponderEvent
   }
 
   /**
